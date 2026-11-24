@@ -13,6 +13,9 @@ top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
 OBJS = \
+	autoindex.o \
+	autoindex_stats.o \
+	autoindex_worker.o \
 	execAmi.o \
 	execAsync.o \
 	execCurrent.o \

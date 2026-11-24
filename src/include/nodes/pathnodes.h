@@ -22,7 +22,6 @@
 #include "nodes/parsenodes.h"
 #include "storage/block.h"
 
-
 /*
  * Relids
  *		Set of relation identifiers (indexes into the rangetable).
@@ -35,7 +34,8 @@ typedef Bitmapset *Relids;
  */
 typedef enum CostSelector
 {
-	STARTUP_COST, TOTAL_COST
+	STARTUP_COST,
+	TOTAL_COST
 } CostSelector;
 
 /*
@@ -183,8 +183,7 @@ typedef struct PlannerGlobal
 
 /* macro for fetching the Plan associated with a SubPlan node */
 #define planner_subplan_get_plan(root, subplan) \
-	((Plan *) list_nth((root)->glob->subplans, (subplan)->plan_id - 1))
-
+	((Plan *)list_nth((root)->glob->subplans, (subplan)->plan_id - 1))
 
 /*----------
  * PlannerInfo
@@ -585,15 +584,13 @@ struct PlannerInfo
 	List	   *partPruneInfos;
 };
 
-
 /*
  * In places where it's known that simple_rte_array[] must have been prepared
  * already, we just index into it to fetch RTEs.  In code that might be
  * executed before or after entering query_planner(), use this macro.
  */
 #define planner_rt_fetch(rti, root) \
-	((root)->simple_rte_array ? (root)->simple_rte_array[rti] : \
-	 rt_fetch(rti, (root)->parse->rtable))
+	((root)->simple_rte_array ? (root)->simple_rte_array[rti] : rt_fetch(rti, (root)->parse->rtable))
 
 /*
  * If multiple relations are partitioned the same way, all such partitions
@@ -860,24 +857,24 @@ typedef enum RelOptKind
  * Is the given relation a simple relation i.e a base or "other" member
  * relation?
  */
-#define IS_SIMPLE_REL(rel) \
+#define IS_SIMPLE_REL(rel)                  \
 	((rel)->reloptkind == RELOPT_BASEREL || \
 	 (rel)->reloptkind == RELOPT_OTHER_MEMBER_REL)
 
 /* Is the given relation a join relation? */
-#define IS_JOIN_REL(rel)	\
+#define IS_JOIN_REL(rel)                    \
 	((rel)->reloptkind == RELOPT_JOINREL || \
 	 (rel)->reloptkind == RELOPT_OTHER_JOINREL)
 
 /* Is the given relation an upper relation? */
-#define IS_UPPER_REL(rel)	\
+#define IS_UPPER_REL(rel)                     \
 	((rel)->reloptkind == RELOPT_UPPER_REL || \
 	 (rel)->reloptkind == RELOPT_OTHER_UPPER_REL)
 
 /* Is the given relation an "other" relation? */
-#define IS_OTHER_REL(rel) \
+#define IS_OTHER_REL(rel)                            \
 	((rel)->reloptkind == RELOPT_OTHER_MEMBER_REL || \
-	 (rel)->reloptkind == RELOPT_OTHER_JOINREL || \
+	 (rel)->reloptkind == RELOPT_OTHER_JOINREL ||    \
 	 (rel)->reloptkind == RELOPT_OTHER_UPPER_REL)
 
 typedef struct RelOptInfo
@@ -966,6 +963,9 @@ typedef struct RelOptInfo
 	Relids		lateral_referencers;
 	/* list of IndexOptInfo */
 	List	   *indexlist;
+
+	List	   *autoindex_plans pg_node_attr(read_write_ignore);
+
 	/* list of StatisticExtInfo */
 	List	   *statlist;
 	/* size estimates derived from pg_class */
@@ -1083,7 +1083,7 @@ typedef struct RelOptInfo
  * but the partition bounds did not.  Also, if we are able to prove a rel
  * dummy (empty), we should henceforth treat it as unpartitioned.
  */
-#define IS_PARTITIONED_REL(rel) \
+#define IS_PARTITIONED_REL(rel)                                     \
 	((rel)->part_scheme && (rel)->boundinfo && (rel)->nparts > 0 && \
 	 (rel)->part_rels && !IS_DUMMY_REL(rel))
 
@@ -1091,7 +1091,7 @@ typedef struct RelOptInfo
  * Convenience macro to make sure that a partitioned relation has all the
  * required members set.
  */
-#define REL_HAS_ALL_PART_PROPS(rel)	\
+#define REL_HAS_ALL_PART_PROPS(rel)                                 \
 	((rel)->part_scheme && (rel)->boundinfo && (rel)->nparts > 0 && \
 	 (rel)->part_rels && (rel)->partexprs && (rel)->nullable_partexprs)
 
@@ -1470,7 +1470,7 @@ typedef struct EquivalenceClass
  * If an EC contains a constant, any PathKey depending on it must be
  * redundant, since there's only one possible value of the key.
  */
-#define EC_MUST_BE_REDUNDANT(eclass)  \
+#define EC_MUST_BE_REDUNDANT(eclass) \
 	((eclass)->ec_has_const)
 
 /*
@@ -1681,8 +1681,7 @@ typedef struct PathTarget
 
 /* Convenience macro to get a sort/group refno from a PathTarget */
 #define get_pathtarget_sortgroupref(target, colno) \
-	((target)->sortgrouprefs ? (target)->sortgrouprefs[colno] : (Index) 0)
-
+	((target)->sortgrouprefs ? (target)->sortgrouprefs[colno] : (Index)0)
 
 /*
  * ParamPathInfo
@@ -1715,7 +1714,6 @@ typedef struct ParamPathInfo
 	List	   *ppi_clauses;	/* join clauses available from outer rels */
 	Bitmapset  *ppi_serials;	/* set of rinfo_serial for enforced quals */
 } ParamPathInfo;
-
 
 /*
  * Type "Path" is used as-is for sequential-scan paths, as well as some other
@@ -1801,8 +1799,8 @@ typedef struct Path
 } Path;
 
 /* Macro for extracting a path's parameterization relids; beware double eval */
-#define PATH_REQ_OUTER(path)  \
-	((path)->param_info ? (path)->param_info->ppi_req_outer : (Relids) NULL)
+#define PATH_REQ_OUTER(path) \
+	((path)->param_info ? (path)->param_info->ppi_req_outer : (Relids)NULL)
 
 /*----------
  * IndexPath represents an index scan over a single index.
@@ -2071,7 +2069,7 @@ typedef struct AppendPath
 } AppendPath;
 
 #define IS_DUMMY_APPEND(p) \
-	(IsA((p), AppendPath) && ((AppendPath *) (p))->subpaths == NIL)
+	(IsA((p), AppendPath) && ((AppendPath *)(p))->subpaths == NIL)
 
 /*
  * A relation that's been proven empty will have one path that is dummy
@@ -2189,7 +2187,6 @@ typedef struct GatherMergePath
 	Path	   *subpath;		/* path for each worker */
 	int			num_workers;	/* number of workers sought to help */
 } GatherMergePath;
-
 
 /*
  * All join-type paths share these fields.
@@ -2546,7 +2543,6 @@ typedef struct LimitPath
 	LimitOption limitOption;	/* FETCH FIRST with ties or exact number */
 } LimitPath;
 
-
 /*
  * Restriction clause info.
  *
@@ -2861,7 +2857,7 @@ typedef struct RestrictInfo
  * required_relids exceed the scope of the join.
  */
 #define RINFO_IS_PUSHED_DOWN(rinfo, joinrelids) \
-	((rinfo)->is_pushed_down || \
+	((rinfo)->is_pushed_down ||                 \
 	 !bms_is_subset((rinfo)->required_relids, joinrelids))
 
 /*
@@ -3392,9 +3388,9 @@ typedef struct JoinPathExtraData
  * for which we support partial aggregation (not, for example, grouping sets).
  * It says nothing about parallel-safety or the availability of suitable paths.
  */
-#define GROUPING_CAN_USE_SORT       0x0001
-#define GROUPING_CAN_USE_HASH       0x0002
-#define GROUPING_CAN_PARTIAL_AGG	0x0004
+#define GROUPING_CAN_USE_SORT 0x0001
+#define GROUPING_CAN_USE_HASH 0x0002
+#define GROUPING_CAN_PARTIAL_AGG 0x0004
 
 /*
  * What kind of partitionwise aggregation is in use?

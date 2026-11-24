@@ -22,7 +22,6 @@
 #include "nodes/lockoptions.h"
 #include "nodes/primnodes.h"
 
-
 /* ----------------------------------------------------------------
  *						node definitions
  * ----------------------------------------------------------------
@@ -140,8 +139,7 @@ typedef struct PlannedStmt
 
 /* macro for fetching the Plan associated with a SubPlan node */
 #define exec_subplan_get_plan(plannedstmt, subplan) \
-	((Plan *) list_nth((plannedstmt)->subplans, (subplan)->plan_id - 1))
-
+	((Plan *)list_nth((plannedstmt)->subplans, (subplan)->plan_id - 1))
 
 /* ----------------
  *		Plan node
@@ -230,9 +228,8 @@ typedef struct Plan
  *	the inner plan, but these make the code more readable.
  * ----------------
  */
-#define innerPlan(node)			(((Plan *)(node))->righttree)
-#define outerPlan(node)			(((Plan *)(node))->lefttree)
-
+#define innerPlan(node) (((Plan *)(node))->righttree)
+#define outerPlan(node) (((Plan *)(node))->lefttree)
 
 /* ----------------
  *	 Result node -
@@ -476,6 +473,32 @@ typedef struct Scan
 	Index		scanrelid;
 } Scan;
 
+typedef struct AutoIndexPlanInfo
+{
+	pg_node_attr(nodetag_number(480))
+
+	NodeTag		type;
+
+	Oid			relation_oid;
+	int			attnum;
+
+	Oid			operator_oid;
+	Oid			access_method_oid;
+	Oid			opclass_oid;
+	Oid			opfamily_oid;
+	Oid			collation_oid;
+
+	int			strategy;
+	int			clause_kind;
+
+	Cost		seq_cost;
+	Cost		index_cost;
+	Cost		build_cost;
+
+	Selectivity selectivity;
+	double		estimated_index_pages;
+} AutoIndexPlanInfo;
+
 /* ----------------
  *		sequential scan node
  * ----------------
@@ -483,6 +506,8 @@ typedef struct Scan
 typedef struct SeqScan
 {
 	Scan		scan;
+
+	List	   *autoindex_plans;
 } SeqScan;
 
 /* ----------------
@@ -1443,7 +1468,6 @@ typedef struct Limit
 	Oid		   *uniqCollations pg_node_attr(array_size(uniqNumCols));
 } Limit;
 
-
 /*
  * RowMarkType -
  *	  enums for types of row-marking operations
@@ -1484,7 +1508,7 @@ typedef enum RowMarkType
 	ROW_MARK_COPY,				/* physically copy the row value */
 } RowMarkType;
 
-#define RowMarkRequiresRowShareLock(marktype)  ((marktype) <= ROW_MARK_KEYSHARE)
+#define RowMarkRequiresRowShareLock(marktype) ((marktype) <= ROW_MARK_KEYSHARE)
 
 /*
  * PlanRowMark -
@@ -1546,7 +1570,6 @@ typedef struct PlanRowMark
 	/* true if this is a "dummy" parent entry */
 	bool		isParent;
 } PlanRowMark;
-
 
 /*
  * Node types to represent partition pruning information.
@@ -1725,7 +1748,6 @@ typedef struct PartitionPruneStepCombine
 	PartitionPruneCombineOp combineOp;
 	List	   *source_stepids;
 } PartitionPruneStepCombine;
-
 
 /*
  * Plan invalidation info

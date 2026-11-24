@@ -59,7 +59,6 @@ struct ExprEvalStep;			/* avoid including execExpr.h everywhere */
 struct CopyMultiInsertBuffer;
 struct LogicalTapeSet;
 
-
 /* ----------------
  *		ExprState node
  *
@@ -73,15 +72,15 @@ typedef Datum (*ExprStateEvalFunc) (struct ExprState *expression,
 
 /* Bits in ExprState->flags (see also execExpr.h for private flag bits): */
 /* expression is for use with ExecQual() */
-#define EEO_FLAG_IS_QUAL					(1 << 0)
+#define EEO_FLAG_IS_QUAL (1 << 0)
 /* expression refers to OLD table columns */
-#define EEO_FLAG_HAS_OLD					(1 << 1)
+#define EEO_FLAG_HAS_OLD (1 << 1)
 /* expression refers to NEW table columns */
-#define EEO_FLAG_HAS_NEW					(1 << 2)
+#define EEO_FLAG_HAS_NEW (1 << 2)
 /* OLD table row is NULL in RETURNING list */
-#define EEO_FLAG_OLD_IS_NULL				(1 << 3)
+#define EEO_FLAG_OLD_IS_NULL (1 << 3)
 /* NEW table row is NULL in RETURNING list */
-#define EEO_FLAG_NEW_IS_NULL				(1 << 4)
+#define EEO_FLAG_NEW_IS_NULL (1 << 4)
 
 typedef struct ExprState
 {
@@ -148,7 +147,6 @@ typedef struct ExprState
 	 */
 	ErrorSaveContext *escontext;
 } ExprState;
-
 
 /* ----------------
  *	  IndexInfo information
@@ -767,7 +765,6 @@ typedef struct EState
 	List	   *es_insert_pending_modifytables;
 } EState;
 
-
 /*
  * ExecRowMark -
  *	   runtime representation of FOR [KEY] UPDATE/SHARE clauses
@@ -818,7 +815,6 @@ typedef struct ExecAuxRowMark
 	AttrNumber	toidAttNo;		/* resno of tableoid junk attribute, if any */
 	AttrNumber	wholeAttNo;		/* resno of whole-row junk attribute, if any */
 } ExecAuxRowMark;
-
 
 /* ----------------------------------------------------------------
  *				 Tuple Hash Tables
@@ -883,12 +879,11 @@ typedef tuplehash_iterator TupleHashIterator;
 #define InitTupleHashIterator(htable, iter) \
 	tuplehash_start_iterate(htable->hashtab, iter)
 #define TermTupleHashIterator(iter) \
-	((void) 0)
+	((void)0)
 #define ResetTupleHashIterator(htable, iter) \
 	InitTupleHashIterator(htable, iter)
 #define ScanTupleHashTable(htable, iter) \
 	tuplehash_iterate(htable->hashtab, iter)
-
 
 /* ----------------------------------------------------------------
  *				 Expression State Nodes
@@ -914,7 +909,6 @@ typedef struct WindowFuncExprState
 	ExprState  *aggfilter;		/* FILTER expression */
 	int			wfuncno;		/* ID number for wfunc within its plan node */
 } WindowFuncExprState;
-
 
 /* ----------------
  *		SetExprState node
@@ -1120,7 +1114,6 @@ typedef struct JsonExprState
 	ErrorSaveContext escontext;
 } JsonExprState;
 
-
 /* ----------------------------------------------------------------
  *				 Executor State Trees
  *
@@ -1247,25 +1240,28 @@ typedef struct PlanState
  *	the inner plan, but these make the code more readable.
  * ----------------
  */
-#define innerPlanState(node)		(((PlanState *)(node))->righttree)
-#define outerPlanState(node)		(((PlanState *)(node))->lefttree)
+#define innerPlanState(node) (((PlanState *)(node))->righttree)
+#define outerPlanState(node) (((PlanState *)(node))->lefttree)
 
 /* Macros for inline access to certain instrumentation counters */
-#define InstrCountTuples2(node, delta) \
-	do { \
-		if (((PlanState *)(node))->instrument) \
+#define InstrCountTuples2(node, delta)                              \
+	do                                                              \
+	{                                                               \
+		if (((PlanState *)(node))->instrument)                      \
 			((PlanState *)(node))->instrument->ntuples2 += (delta); \
 	} while (0)
-#define InstrCountFiltered1(node, delta) \
-	do { \
-		if (((PlanState *)(node))->instrument) \
+#define InstrCountFiltered1(node, delta)                              \
+	do                                                                \
+	{                                                                 \
+		if (((PlanState *)(node))->instrument)                        \
 			((PlanState *)(node))->instrument->nfiltered1 += (delta); \
-	} while(0)
-#define InstrCountFiltered2(node, delta) \
-	do { \
-		if (((PlanState *)(node))->instrument) \
+	} while (0)
+#define InstrCountFiltered2(node, delta)                              \
+	do                                                                \
+	{                                                                 \
+		if (((PlanState *)(node))->instrument)                        \
 			((PlanState *)(node))->instrument->nfiltered2 += (delta); \
-	} while(0)
+	} while (0)
 
 /*
  * EPQState is state for executing an EvalPlanQual recheck on a candidate
@@ -1309,14 +1305,12 @@ typedef struct EPQState
 	Plan	   *plan;			/* plan tree to be executed */
 	List	   *arowMarks;		/* ExecAuxRowMarks (non-locking only) */
 
-
 	/*
 	 * The original output tuple to be rechecked.  Set by
 	 * EvalPlanQualSetSlot(), before EvalPlanQualNext() or EvalPlanQual() may
 	 * be called.
 	 */
 	TupleTableSlot *origslot;
-
 
 	/* Initialized or reset by EvalPlanQualBegin(): */
 
@@ -1348,7 +1342,6 @@ typedef struct EPQState
 	PlanState  *recheckplanstate;	/* EPQ specific exec nodes, for ->plan */
 } EPQState;
 
-
 /* ----------------
  *	 ResultState information
  * ----------------
@@ -1378,11 +1371,10 @@ typedef struct ProjectSetState
 	MemoryContext argcontext;	/* context for SRF arguments */
 } ProjectSetState;
 
-
 /* flags for mt_merge_subcommands */
-#define MERGE_INSERT	0x01
-#define MERGE_UPDATE	0x02
-#define MERGE_DELETE	0x04
+#define MERGE_INSERT 0x01
+#define MERGE_UPDATE 0x02
+#define MERGE_DELETE 0x04
 
 /* ----------------
  *	 ModifyTableState information
@@ -1622,6 +1614,8 @@ typedef struct SeqScanState
 {
 	ScanState	ss;				/* its first field is NodeTag */
 	Size		pscan_len;		/* size of parallel heap scan descriptor */
+	struct SharedSeqScanInstrumentation *sinstrument;
+	struct AutoIndexScanState *autoindex_state;
 } SeqScanState;
 
 /* ----------------
@@ -2265,7 +2259,6 @@ typedef struct HashJoinState
 	bool		hj_MatchedOuter;
 	bool		hj_OuterNotEmpty;
 } HashJoinState;
-
 
 /* ----------------------------------------------------------------
  *				 Materialization State Information

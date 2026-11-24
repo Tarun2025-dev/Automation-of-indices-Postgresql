@@ -1,6 +1,9 @@
 # Copyright (c) 2022-2025, PostgreSQL Global Development Group
 
 backend_sources += files(
+  'autoindex.c',
+  'autoindex_stats.c',
+  'autoindex_worker.c',
   'execAmi.c',
   'execAsync.c',
   'execCurrent.c',

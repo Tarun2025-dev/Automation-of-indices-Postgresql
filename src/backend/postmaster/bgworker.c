@@ -30,6 +30,7 @@
 #include "storage/shmem.h"
 #include "tcop/tcopprot.h"
 #include "utils/ascii.h"
+#include "utils/autoindex.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/timeout.h"
@@ -118,26 +119,15 @@ static const struct
 }			InternalBGWorkers[] =
 
 {
-	{
-		"ParallelWorkerMain", ParallelWorkerMain
-	},
-	{
-		"ApplyLauncherMain", ApplyLauncherMain
-	},
-	{
-		"ApplyWorkerMain", ApplyWorkerMain
-	},
-	{
-		"ParallelApplyWorkerMain", ParallelApplyWorkerMain
-	},
-	{
-		"TablesyncWorkerMain", TablesyncWorkerMain
-	}
-};
+	{"AutoIndexBuilderMain", AutoIndexBuilderMain},
+	{"ParallelWorkerMain", ParallelWorkerMain},
+	{"ApplyLauncherMain", ApplyLauncherMain},
+	{"ApplyWorkerMain", ApplyWorkerMain},
+	{"ParallelApplyWorkerMain", ParallelApplyWorkerMain},
+{"TablesyncWorkerMain", TablesyncWorkerMain}};
 
 /* Private functions. */
 static bgworker_main_type LookupBackgroundWorkerFunction(const char *libraryname, const char *funcname);
-
 
 /*
  * Calculate shared memory needed.

@@ -44,7 +44,6 @@
 #include "tcop/tcopprot.h"
 #include "utils/lsyscache.h"
 
-
 /*
  * Flag bits that can appear in the flags argument of create_plan_recurse().
  * These can be OR-ed together.
@@ -67,11 +66,10 @@
  * CP_IGNORE_TLIST specifies that the caller plans to replace the targetlist,
  * and therefore it doesn't matter a bit what target list gets generated.
  */
-#define CP_EXACT_TLIST		0x0001	/* Plan must return specified tlist */
-#define CP_SMALL_TLIST		0x0002	/* Prefer narrower tlists */
-#define CP_LABEL_TLIST		0x0004	/* tlist must contain sortgrouprefs */
-#define CP_IGNORE_TLIST		0x0008	/* caller will replace tlist */
-
+#define CP_EXACT_TLIST 0x0001	/* Plan must return specified tlist */
+#define CP_SMALL_TLIST 0x0002	/* Prefer narrower tlists */
+#define CP_LABEL_TLIST 0x0004	/* tlist must contain sortgrouprefs */
+#define CP_IGNORE_TLIST 0x0008	/* caller will replace tlist */
 
 static Plan *create_plan_recurse(PlannerInfo *root, Path *best_path,
 								 int flags);
@@ -316,7 +314,6 @@ static ModifyTable *make_modifytable(PlannerInfo *root, Plan *subplan,
 									 int epqParam);
 static GatherMerge *create_gather_merge_plan(PlannerInfo *root,
 											 GatherMergePath *best_path);
-
 
 /*
  * create_plan
@@ -2194,8 +2191,7 @@ create_sort_plan(PlannerInfo *root, SortPath *best_path, int flags)
 	 * pass its relids.
 	 */
 	plan = make_sort_from_pathkeys(subplan, best_path->path.pathkeys,
-								   IS_OTHER_REL(best_path->subpath->parent) ?
-								   best_path->path.parent->relids : NULL);
+								   IS_OTHER_REL(best_path->subpath->parent) ? best_path->path.parent->relids : NULL);
 
 	copy_generic_path_info(&plan->plan, (Path *) best_path);
 
@@ -2219,8 +2215,7 @@ create_incrementalsort_plan(PlannerInfo *root, IncrementalSortPath *best_path,
 								  flags | CP_SMALL_TLIST);
 	plan = make_incrementalsort_from_pathkeys(subplan,
 											  best_path->spath.path.pathkeys,
-											  IS_OTHER_REL(best_path->spath.subpath->parent) ?
-											  best_path->spath.path.parent->relids : NULL,
+											  IS_OTHER_REL(best_path->spath.subpath->parent) ? best_path->spath.path.parent->relids : NULL,
 											  best_path->nPresortedCols);
 
 	copy_generic_path_info(&plan->sort.plan, (Path *) best_path);
@@ -2893,13 +2888,11 @@ create_limit_plan(PlannerInfo *root, LimitPath *best_path, int flags)
 	return plan;
 }
 
-
 /*****************************************************************************
  *
  *	BASE-RELATION SCAN METHODS
  *
  *****************************************************************************/
-
 
 /*
  * create_seqscan_plan
@@ -2934,6 +2927,7 @@ create_seqscan_plan(PlannerInfo *root, Path *best_path,
 							 scan_clauses,
 							 scan_relid);
 
+	scan_plan->autoindex_plans = (List *) copyObject(best_path->parent->autoindex_plans);
 	copy_generic_path_info(&scan_plan->scan.plan, best_path);
 
 	return scan_plan;
@@ -4330,7 +4324,6 @@ create_customscan_plan(PlannerInfo *root, CustomPath *best_path,
 	return cplan;
 }
 
-
 /*****************************************************************************
  *
  *	JOIN METHODS
@@ -5015,7 +5008,6 @@ create_hashjoin_plan(PlannerInfo *root,
 
 	return join_plan;
 }
-
 
 /*****************************************************************************
  *
@@ -7188,9 +7180,7 @@ make_modifytable(PlannerInfo *root, Plan *subplan,
 	int			i;
 
 	Assert(operation == CMD_MERGE ||
-		   (operation == CMD_UPDATE ?
-			list_length(resultRelations) == list_length(updateColnosLists) :
-			updateColnosLists == NIL));
+		   (operation == CMD_UPDATE ? list_length(resultRelations) == list_length(updateColnosLists) : updateColnosLists == NIL));
 	Assert(withCheckOptionLists == NIL ||
 		   list_length(resultRelations) == list_length(withCheckOptionLists));
 	Assert(returningLists == NIL ||

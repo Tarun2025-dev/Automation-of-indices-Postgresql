@@ -33,6 +33,7 @@
 #include "executor/executor.h"
 #include "executor/nodeSeqscan.h"
 #include "utils/rel.h"
+#include "utils/autoindex.h"
 
 static TupleTableSlot *SeqNext(SeqScanState *node);
 
@@ -80,6 +81,9 @@ SeqNext(SeqScanState *node)
 	 */
 	if (table_scan_getnextslot(scandesc, direction, slot))
 		return slot;
+
+	AutoIndexScanExhausted(node);
+
 	return NULL;
 }
 
@@ -254,6 +258,8 @@ ExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
 	scanstate->ss.ps.qual =
 		ExecInitQual(node->scan.plan.qual, (PlanState *) scanstate);
 
+	AutoIndexInitSeqScan(scanstate, node->scan.plan.qual);
+
 	/*
 	 * When EvalPlanQual() is not in use, assign ExecProcNode for this node
 	 * based on the presence of qual and projection. Each ExecSeqScan*()
@@ -295,6 +301,8 @@ ExecEndSeqScan(SeqScanState *node)
 	 */
 	scanDesc = node->ss.ss_currentScanDesc;
 
+	AutoIndexEndSeqScan(node);
+
 	/*
 	 * close heap scan
 	 */
@@ -317,6 +325,8 @@ void
 ExecReScanSeqScan(SeqScanState *node)
 {
 	TableScanDesc scan;
+
+	AutoIndexResetSeqScan(node);
 
 	scan = node->ss.ss_currentScanDesc;
 

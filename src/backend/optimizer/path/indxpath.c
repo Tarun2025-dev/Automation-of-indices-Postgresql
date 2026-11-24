@@ -37,6 +37,20 @@
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 
+#include "access/amapi.h"
+#include "access/brin.h"
+#include "access/brin_page.h"
+#include "access/itup.h"
+#include "catalog/catalog.h"
+#include "catalog/pg_am_d.h"
+#include "catalog/pg_class.h"
+#include "commands/defrem.h"
+#include "utils/autoindex.h"
+#include "miscadmin.h"
+#include "parser/parsetree.h"
+#include "storage/bufpage.h"
+#include "storage/itemid.h"
+#include "utils/spccache.h"
 
 /* XXX see PartCollMatchesExprColl */
 #define IndexCollMatchesExprColl(idxcollation, exprcollation) \
@@ -74,7 +88,6 @@ typedef struct
 	IndexOptInfo *index;		/* index we're considering */
 	int			indexcol;		/* index column we want to match to */
 } ec_member_matches_arg;
-
 
 static void consider_index_join_clauses(PlannerInfo *root, RelOptInfo *rel,
 										IndexOptInfo *index,
@@ -197,7 +210,574 @@ static Expr *match_clause_to_ordering_op(IndexOptInfo *index,
 static bool ec_member_matches_indexcol(PlannerInfo *root, RelOptInfo *rel,
 									   EquivalenceClass *ec, EquivalenceMember *em,
 									   void *arg);
+static void autoindex_collect_hypothetical_costs(PlannerInfo *root,
+												 RelOptInfo *rel);
 
+static const Oid autoindex_access_methods[] = {
+	BTREE_AM_OID,
+	HASH_AM_OID,
+	GIN_AM_OID,
+	GIST_AM_OID,
+	SPGIST_AM_OID,
+BRIN_AM_OID};
+
+static bool
+autoindex_extract_raw_candidate(RelOptInfo *rel, Expr *clause, AttrNumber *attnum, Oid *operator_oid, Oid *collation_oid, int *clause_kind)
+{
+	Var		   *var = NULL;
+
+	if (IsA(clause, OpExpr))
+	{
+		OpExpr	   *op = (OpExpr *) clause;
+		Node	   *left;
+		Node	   *right;
+
+		if (list_length(op->args) != 2)
+			return false;
+
+		left = (Node *) linitial(op->args);
+		right = (Node *) lsecond(op->args);
+
+		if (IsA(left, Var) && (IsA(right, Const) || IsA(right, Param)))
+		{
+			var = (Var *) left;
+			*operator_oid = op->opno;
+		}
+		else if (IsA(right, Var) && (IsA(left, Const) || IsA(left, Param)))
+		{
+			Oid			commutator = get_commutator(op->opno);
+
+			if (!OidIsValid(commutator))
+				return false;
+
+			var = (Var *) right;
+			*operator_oid = commutator;
+		}
+		else
+			return false;
+
+		*collation_oid = op->inputcollid;
+		*clause_kind = AUTO_INDEX_CLAUSE_OPERATOR;
+	}
+	else if (IsA(clause, ScalarArrayOpExpr))
+	{
+		ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
+		Node	   *left;
+		Node	   *right;
+
+		if (!saop->useOr || list_length(saop->args) != 2)
+			return false;
+
+		left = (Node *) linitial(saop->args);
+		right = (Node *) lsecond(saop->args);
+
+		if (!IsA(left, Var) || !(IsA(right, Const) || IsA(right, Param)))
+			return false;
+
+		var = (Var *) left;
+		*operator_oid = saop->opno;
+		*collation_oid = saop->inputcollid;
+		*clause_kind = AUTO_INDEX_CLAUSE_SCALAR_ARRAY;
+	}
+	else if (IsA(clause, NullTest))
+	{
+		NullTest   *nulltest = (NullTest *) clause;
+
+		if (nulltest->argisrow || !IsA(nulltest->arg, Var))
+			return false;
+
+		var = (Var *) nulltest->arg;
+		*operator_oid = InvalidOid;
+		*collation_oid = var->varcollid;
+		*clause_kind = AUTO_INDEX_CLAUSE_NULL_TEST;
+	}
+	else
+		return false;
+
+	if (var->varno != rel->relid || var->varlevelsup != 0 || var->varattno <= 0)
+		return false;
+
+	*attnum = var->varattno;
+	return true;
+}
+
+static bool
+autoindex_equivalent_index_exists(RelOptInfo *rel, AttrNumber attnum, Oid access_method_oid, Oid opfamily_oid, Oid collation_oid)
+{
+	ListCell   *lc;
+
+	foreach(lc, rel->indexlist)
+	{
+		IndexOptInfo *index = (IndexOptInfo *) lfirst(lc);
+
+		if (index->nkeycolumns < 1 || index->indexkeys[0] != attnum)
+			continue;
+
+		if (index->relam != access_method_oid || index->opfamily[0] != opfamily_oid || index->indexcollations[0] != collation_oid)
+			continue;
+
+		if (index->indpred == NIL || index->predOK)
+			return true;
+	}
+
+	return false;
+}
+
+static bool
+autoindex_plan_already_added(List *plans, AttrNumber attnum, Oid access_method_oid, Oid opclass_oid, Oid collation_oid)
+{
+	ListCell   *lc;
+
+	foreach(lc, plans)
+	{
+		AutoIndexPlanInfo *plan = (AutoIndexPlanInfo *) lfirst(lc);
+
+		if (plan->attnum == attnum && plan->access_method_oid == access_method_oid && plan->opclass_oid == opclass_oid && plan->collation_oid == collation_oid)
+			return true;
+	}
+
+	return false;
+}
+
+static BlockNumber
+autoindex_estimate_index_pages(RelOptInfo *rel, Oid relation_oid, AttrNumber attnum, Oid access_method_oid, int *key_width)
+{
+	Oid			type_oid;
+	Oid			attribute_collation;
+	int32		typmod;
+	int32		width;
+	double		tuples;
+	double		tuple_bytes;
+	double		usable_bytes;
+	double		tuples_per_page;
+	double		pages;
+
+	get_atttypetypmodcoll(relation_oid, attnum, &type_oid, &typmod, &attribute_collation);
+
+	width = get_attavgwidth(relation_oid, attnum);
+
+	if (width <= 0)
+		width = get_typavgwidth(type_oid, typmod);
+
+	width = Max(width, 1);
+	*key_width = width;
+
+	tuples = Max((double) rel->tuples, 1.0);
+
+	tuple_bytes = MAXALIGN(sizeof(IndexTupleData)) + MAXALIGN(width) + sizeof(ItemIdData);
+
+	usable_bytes = Max((double) BLCKSZ - SizeOfPageHeaderData, tuple_bytes);
+
+	tuples_per_page = Max(floor(usable_bytes / tuple_bytes), 1.0);
+
+	if (access_method_oid == BRIN_AM_OID)
+	{
+		double		ranges;
+		double		revmap_pages;
+
+		ranges = Max(ceil((double) rel->pages / BRIN_DEFAULT_PAGES_PER_RANGE), 1.0);
+
+		revmap_pages = ceil(ranges / REVMAP_PAGE_MAXITEMS);
+
+		pages = 1.0 + revmap_pages + ceil(ranges / tuples_per_page);
+	}
+	else
+	{
+		pages = 1.0 + ceil(tuples / tuples_per_page);
+	}
+
+	pages = Max(pages, 1.0);
+	pages = Min(pages, (double) MaxBlockNumber);
+
+	return (BlockNumber) pages;
+}
+
+static IndexOptInfo *
+autoindex_make_hypothetical_index(RelOptInfo *rel, Oid relation_oid, AttrNumber attnum, Oid access_method_oid, Oid opclass_oid, Oid opfamily_oid, Oid collation_oid, int *key_width)
+{
+	IndexOptInfo *index = makeNode(IndexOptInfo);
+	IndexAmRoutine *amroutine;
+	Oid			type_oid;
+	Oid			attribute_collation;
+	int32		typmod;
+
+	amroutine = GetIndexAmRoutineByAmId(access_method_oid, false);
+
+	get_atttypetypmodcoll(relation_oid, attnum, &type_oid, &typmod, &attribute_collation);
+
+	index->indexoid = InvalidOid;
+	index->reltablespace = rel->reltablespace;
+	index->rel = rel;
+
+	index->pages = autoindex_estimate_index_pages(rel, relation_oid, attnum, access_method_oid, key_width);
+
+	index->tuples = Max((double) rel->tuples, 1.0);
+	index->tree_height = -1;
+
+	if (access_method_oid == BTREE_AM_OID)
+	{
+		if (index->pages > 1)
+			index->tree_height = (int) ceil(log((double) index->pages) / log(100.0));
+		else
+			index->tree_height = 0;
+	}
+
+	index->ncolumns = 1;
+	index->nkeycolumns = 1;
+
+	index->indexkeys = (int *) palloc(sizeof(int));
+	index->indexcollations = (Oid *) palloc(sizeof(Oid));
+	index->opfamily = (Oid *) palloc(sizeof(Oid));
+	index->opcintype = (Oid *) palloc(sizeof(Oid));
+	index->canreturn = (bool *) palloc0(sizeof(bool));
+	index->opclassoptions = (bytea **) palloc0(sizeof(bytea *));
+
+	index->indexkeys[0] = attnum;
+	index->indexcollations[0] = collation_oid;
+	index->opfamily[0] = opfamily_oid;
+	index->opcintype[0] = get_opclass_input_type(opclass_oid);
+
+	index->relam = access_method_oid;
+
+	index->amcanorderbyop = amroutine->amcanorderbyop;
+	index->amoptionalkey = amroutine->amoptionalkey;
+	index->amsearcharray = amroutine->amsearcharray;
+	index->amsearchnulls = amroutine->amsearchnulls;
+	index->amcanparallel = amroutine->amcanparallel;
+	index->amhasgettuple = amroutine->amgettuple != NULL;
+	index->amhasgetbitmap = amroutine->amgetbitmap != NULL;
+
+	index->amcanmarkpos = amroutine->ammarkpos != NULL && amroutine->amrestrpos != NULL;
+
+	index->amcostestimate = amroutine->amcostestimate;
+
+	if (access_method_oid == BTREE_AM_OID)
+	{
+		index->sortopfamily = index->opfamily;
+		index->reverse_sort = (bool *) palloc0(sizeof(bool));
+		index->nulls_first = (bool *) palloc0(sizeof(bool));
+	}
+	else
+	{
+		index->sortopfamily = NULL;
+		index->reverse_sort = NULL;
+		index->nulls_first = NULL;
+	}
+
+	index->indexprs = NIL;
+	index->indpred = NIL;
+
+	index->indextlist = list_make1(makeTargetEntry((Expr *) makeVar(rel->relid, attnum, type_oid, typmod, collation_oid, 0), 1, NULL, false));
+
+	index->indrestrictinfo = rel->baserestrictinfo;
+	index->predOK = true;
+	index->unique = false;
+	index->nullsnotdistinct = false;
+	index->immediate = true;
+	index->hypothetical = true;
+
+	(void) attribute_collation;
+
+	return index;
+}
+
+static void
+autoindex_consider_index_path(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *index, IndexPath *ipath, Cost *best_cost, Selectivity *best_selectivity, bool *found)
+{
+	if (index->amhasgettuple && (!*found || ipath->path.total_cost < *best_cost))
+	{
+		*best_cost = ipath->path.total_cost;
+		*best_selectivity = ipath->indexselectivity;
+		*found = true;
+	}
+
+	if (index->amhasgetbitmap && ipath->indexselectivity < 1.0)
+	{
+		Relids		required_outer;
+		double		loop_count;
+		BitmapHeapPath *bpath;
+
+		required_outer = PATH_REQ_OUTER(&ipath->path);
+
+		loop_count = get_loop_count(root, rel->relid, required_outer);
+
+		bpath = create_bitmap_heap_path(root, rel, (Path *) ipath, required_outer, loop_count, 0);
+
+		if (!*found || bpath->path.total_cost < *best_cost)
+		{
+			*best_cost = bpath->path.total_cost;
+			*best_selectivity = ipath->indexselectivity;
+			*found = true;
+		}
+	}
+}
+
+static bool
+autoindex_best_index_cost(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *index, IndexClauseSet *clauses, Cost *best_cost, Selectivity *best_selectivity)
+{
+	List	   *paths;
+	ListCell   *lc;
+	bool		skip_nonnative_saop = false;
+	bool		found = false;
+
+	paths = build_index_paths(root, rel, index, clauses, false, ST_ANYSCAN, &skip_nonnative_saop);
+
+	foreach(lc, paths)
+	{
+		autoindex_consider_index_path(root, rel, index, (IndexPath *) lfirst(lc), best_cost, best_selectivity, &found);
+	}
+
+	if (skip_nonnative_saop)
+	{
+		paths = build_index_paths(root, rel, index, clauses, false, ST_BITMAPSCAN, NULL);
+
+		foreach(lc, paths)
+		{
+			autoindex_consider_index_path(root, rel, index, (IndexPath *) lfirst(lc), best_cost, best_selectivity, &found);
+		}
+	}
+
+	return found;
+}
+
+static Cost
+autoindex_estimate_build_cost(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *index, int key_width)
+{
+	Cost		read_cost;
+	Cost		tuple_cost;
+	Cost		write_cost;
+	Cost		seq_page_cost;
+	double		tuples;
+
+	tuples = Max((double) rel->tuples, 1.0);
+
+	get_tablespace_page_costs(rel->reltablespace, NULL, &seq_page_cost);
+
+	read_cost = (Cost) rel->pages * seq_page_cost;
+
+	tuple_cost = tuples * (cpu_tuple_cost + cpu_index_tuple_cost + cpu_operator_cost);
+
+	write_cost = (Cost) index->pages * seq_page_cost;
+
+	if (index->relam == BTREE_AM_OID)
+	{
+		Path		sort_path;
+
+		MemSet(&sort_path, 0, sizeof(sort_path));
+
+		cost_sort(&sort_path, root, NIL, 0, read_cost + tuple_cost, tuples, key_width, cpu_operator_cost, maintenance_work_mem, -1.0);
+
+		return sort_path.total_cost + write_cost;
+	}
+
+	return read_cost + tuple_cost + write_cost;
+}
+
+static void
+autoindex_consider_raw_candidate(PlannerInfo *root, RelOptInfo *rel, Oid relation_oid,
+								 Path *seq_path,
+								 AttrNumber attnum,
+								 Oid operator_oid,
+								 Oid expression_collation,
+								 int clause_kind)
+{
+	Oid			type_oid;
+	Oid			attribute_collation;
+	int32		typmod;
+	int			i;
+
+	get_atttypetypmodcoll(relation_oid,
+						  attnum,
+						  &type_oid,
+						  &typmod,
+						  &attribute_collation);
+
+	for (i = 0;
+		 i < lengthof(autoindex_access_methods);
+		 i++)
+	{
+		Oid			access_method_oid;
+		Oid			opclass_oid;
+		Oid			opfamily_oid;
+		Oid			collation_oid;
+		int			strategy = 0;
+		IndexAmRoutine *amroutine;
+		IndexOptInfo *index;
+		IndexClauseSet clauses;
+		Cost		index_cost = 0;
+		Selectivity selectivity = 1.0;
+		AutoIndexPlanInfo *plan;
+		int			key_width;
+
+		access_method_oid =
+			autoindex_access_methods[i];
+
+		opclass_oid =
+			GetDefaultOpClass(type_oid,
+							  access_method_oid);
+
+		if (!OidIsValid(opclass_oid))
+			continue;
+
+		opfamily_oid =
+			get_opclass_family(opclass_oid);
+
+		amroutine =
+			GetIndexAmRoutineByAmId(access_method_oid,
+									false);
+
+		if (OidIsValid(operator_oid))
+		{
+			strategy =
+				get_op_opfamily_strategy(operator_oid,
+										 opfamily_oid);
+
+			if (strategy == 0)
+				continue;
+		}
+		else if (!amroutine->amsearchnulls)
+		{
+			continue;
+		}
+
+		collation_oid =
+			OidIsValid(expression_collation)
+			? expression_collation
+			: attribute_collation;
+
+		if (autoindex_equivalent_index_exists(
+											  rel,
+											  attnum,
+											  access_method_oid,
+											  opfamily_oid,
+											  collation_oid))
+			continue;
+
+		if (autoindex_plan_already_added(
+										 rel->autoindex_plans,
+										 attnum,
+										 access_method_oid,
+										 opclass_oid,
+										 collation_oid))
+			continue;
+
+		index =
+			autoindex_make_hypothetical_index(
+											  rel,
+											  relation_oid,
+											  attnum,
+											  access_method_oid,
+											  opclass_oid,
+											  opfamily_oid,
+											  collation_oid,
+											  &key_width);
+
+		MemSet(&clauses, 0, sizeof(clauses));
+
+		match_restriction_clauses_to_index(root,
+										   index,
+										   &clauses);
+
+		if (!clauses.nonempty)
+			continue;
+
+		if (!autoindex_best_index_cost(root,
+									   rel,
+									   index,
+									   &clauses,
+									   &index_cost,
+									   &selectivity))
+			continue;
+
+		plan = makeNode(AutoIndexPlanInfo);
+
+		plan->relation_oid = relation_oid;
+		plan->attnum = attnum;
+		plan->operator_oid = operator_oid;
+		plan->access_method_oid = access_method_oid;
+		plan->opclass_oid = opclass_oid;
+		plan->opfamily_oid = opfamily_oid;
+		plan->collation_oid = collation_oid;
+		plan->strategy = strategy;
+		plan->clause_kind = clause_kind;
+
+		plan->seq_cost = seq_path->total_cost;
+		plan->index_cost = index_cost;
+
+		plan->build_cost =
+			autoindex_estimate_build_cost(root,
+										  rel,
+										  index,
+										  key_width);
+
+		plan->selectivity = selectivity;
+		plan->estimated_index_pages = index->pages;
+
+		rel->autoindex_plans =
+			lappend(rel->autoindex_plans, plan);
+	}
+
+	(void) typmod;
+}
+
+static void
+autoindex_collect_hypothetical_costs(PlannerInfo *root,
+									 RelOptInfo *rel)
+{
+	RangeTblEntry *rte;
+	Path	   *seq_path;
+	ListCell   *lc;
+
+	if (!auto_index_enabled ||
+		rel->baserestrictinfo == NIL)
+		return;
+
+	rte = planner_rt_fetch(rel->relid, root);
+
+	if (rte->rtekind != RTE_RELATION ||
+		rte->relkind != RELKIND_RELATION ||
+		get_rel_persistence(rte->relid) !=
+		RELPERSISTENCE_PERMANENT ||
+		IsCatalogRelationOid(rte->relid) ||
+		IsToastNamespace(get_rel_namespace(rte->relid)))
+		return;
+
+	seq_path =
+		create_seqscan_path(root,
+							rel,
+							rel->lateral_relids,
+							0);
+
+	foreach(lc, rel->baserestrictinfo)
+	{
+		RestrictInfo *rinfo =
+			(RestrictInfo *) lfirst(lc);
+
+		AttrNumber	attnum;
+		Oid			operator_oid;
+		Oid			collation_oid;
+		int			clause_kind;
+
+		if (!autoindex_extract_raw_candidate(
+											 rel,
+											 rinfo->clause,
+											 &attnum,
+											 &operator_oid,
+											 &collation_oid,
+											 &clause_kind))
+			continue;
+
+		autoindex_consider_raw_candidate(
+										 root,
+										 rel,
+										 rte->relid,
+										 seq_path,
+										 attnum,
+										 operator_oid,
+										 collation_oid,
+										 clause_kind);
+	}
+}
 
 /*
  * create_index_paths()
@@ -247,6 +827,8 @@ create_index_paths(PlannerInfo *root, RelOptInfo *rel)
 	IndexClauseSet jclauseset;
 	IndexClauseSet eclauseset;
 	ListCell   *lc;
+
+	autoindex_collect_hypothetical_costs(root, rel);
 
 	/* Skip the whole mess if no indexes */
 	if (rel->indexlist == NIL)
@@ -697,7 +1279,6 @@ eclass_already_used(EquivalenceClass *parent_ec, Relids oldrelids,
 	}
 	return false;
 }
-
 
 /*
  * get_index_paths
@@ -1614,7 +2195,6 @@ make_bitmap_paths_for_or_group(PlannerInfo *root, RelOptInfo *rel,
 		return (jointcost < splitcost) ? jointlist : splitlist;
 }
 
-
 /*
  * generate_bitmap_or_paths
  *		Look through the list of clauses to find OR clauses, and generate
@@ -1768,7 +2348,6 @@ generate_bitmap_or_paths(PlannerInfo *root, RelOptInfo *rel,
 
 	return result;
 }
-
 
 /*
  * choose_bitmap_and
@@ -2068,7 +2647,6 @@ bitmap_and_cost_est(PlannerInfo *root, RelOptInfo *rel, List *paths)
 	return bitmap_scan_cost_est(root, rel, (Path *) apath);
 }
 
-
 /*
  * classify_index_clause_usage
  *		Construct a PathClauseUsage struct describing the WHERE clauses and
@@ -2135,7 +2713,6 @@ classify_index_clause_usage(Path *path, List **clauselist)
 	return result;
 }
 
-
 /*
  * find_indexpath_quals
  *
@@ -2191,7 +2768,6 @@ find_indexpath_quals(Path *bitmapqual, List **quals, List **preds)
 		elog(ERROR, "unrecognized node type: %d", nodeTag(bitmapqual));
 }
 
-
 /*
  * find_list_position
  *		Return the given node's position (counting from 0) in the given
@@ -2218,7 +2794,6 @@ find_list_position(Node *node, List **nodelist)
 
 	return i;
 }
-
 
 /*
  * check_index_only
@@ -2451,7 +3026,6 @@ approximate_joinrel_size(PlannerInfo *root, Relids relids)
 	}
 	return rowcount;
 }
-
 
 /****************************************************************************
  *				----  ROUTINES TO CHECK QUERY CLAUSES  ----
@@ -3693,7 +4267,6 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 	return iclause;
 }
 
-
 /****************************************************************************
  *				----  ROUTINES TO CHECK ORDERING OPERATORS	----
  ****************************************************************************/
@@ -3733,7 +4306,6 @@ match_pathkeys_to_index(IndexOptInfo *index, List *pathkeys,
 		bool		found = false;
 		EquivalenceMemberIterator it;
 		EquivalenceMember *member;
-
 
 		/* Pathkey must request default sort order for the target opfamily */
 		if (pathkey->pk_cmptype != COMPARE_LT || pathkey->pk_nulls_first)
@@ -3911,7 +4483,6 @@ match_clause_to_ordering_op(IndexOptInfo *index,
 
 	return clause;
 }
-
 
 /****************************************************************************
  *				----  ROUTINES TO DO PARTIAL INDEX PREDICATE TESTS	----
@@ -4394,7 +4965,6 @@ indexcol_is_bool_constant_for_query(PlannerInfo *root,
 
 	return false;
 }
-
 
 /****************************************************************************
  *				----  ROUTINES TO CHECK OPERANDS  ----

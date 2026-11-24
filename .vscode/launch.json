@@ -1,0 +1,44 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "PostgreSQL Single-User Debug",
+            "type": "cppdbg",
+            "request": "launch",
+
+            "program": "${env:HOME}/cs631/postgresql/install/bin/postgres",
+
+            "args": [
+                "--single",
+                "-D",
+                "${env:HOME}/cs631/postgresql/install/data",
+                "test"
+            ],
+
+            "stopAtEntry": false,
+
+            "cwd": "${env:HOME}/cs631/postgresql",
+
+            "environment": [
+                {
+                    "name": "LD_LIBRARY_PATH",
+                    "value": "${env:HOME}/cs631/postgresql/install/lib"
+                }
+            ],
+
+            "externalConsole": false,
+
+            "MIMode": "gdb",
+
+            "miDebuggerPath": "/usr/bin/gdb",
+
+            "setupCommands": [
+                {
+                    "description": "Enable pretty printing for GDB",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ]
+        }
+    ]
+}
